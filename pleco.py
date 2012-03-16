@@ -8,6 +8,16 @@ import urllib
 import hashlib
 import time
 
+# This program will first download a list of stocks from the TSX. Then, for
+# each stock, it grabs company information, including company name and
+# quarterly EPS and revenue data, and adds it to an SQLITE database.
+
+# All web pages downloaded are stored in a folder called "cache", so they will
+# never need to be downloaded again. To get fresh data from the web, you will
+# have to delete the cache folder.
+
+# Here is the schema for the SQL database. Note that dates are recorded as the
+# number of seconds since January 1, 1970
 SCHEMA = """
 CREATE TABLE COMPANIES (
     symbol TEXT PRIMARY KEY,
@@ -96,6 +106,8 @@ class Database:
 
         return c.fetchall()
 
+# This class will fetch a web page from the WWW. However, if the web page
+# exists in the cache, it will instead use the cached version.
 class PageCache:
     def __init__(self):
         if not os.path.exists( CACHE_FOLDER ):
@@ -123,11 +135,15 @@ class PageCache:
 
 class EmptyClass: pass
 
+# The Pleco class contains logic for scraping the stock information from the
+# internet.
 class Pleco:
     def __init__(self):
         self.db = Database()
         self.webCache = PageCache()
 
+    # This function will, given a stock symbol, scrape the industry from
+    # the global and mail. It returns it as a string.
     def scrapeIndustryForSymbol( self, symbol ):
         symbol = symbol.upper()
         if symbol.startswith("TSE:"):
@@ -145,6 +161,8 @@ class Pleco:
 
         return item.string
 
+    # This function will, given a stock symbol, scrape the company name from
+    # Google Finance. It returns it as a string.
     def scrapeCompanyNameForSymbol( self, symbol ):
         url = "http://www.google.com/finance?q=%s&fstype=ii" % symbol.upper()
         page = self.webCache.get( url )
@@ -157,6 +175,8 @@ class Pleco:
         else:
             return None
 
+    # This function will return a list of all of the stock symbols on the TSX,
+    # scraped from the TSX web page.
     def scrapeCompanies( self ):
         letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
         PageExpr = re.compile("""Page \d+ of (\d+)""")
@@ -191,8 +211,14 @@ class Pleco:
                 page = self.webCache.get( url )
                 process(page)
 
+    # Assume the database already has the companies table filled in. This
+    # function will get the current price of every company that we know about
+    # and store it in the prices table, along with the date. 
     def scrapePrices( self ):
         date = int(time.time())
+        
+        # Given a list of symbols, we get the prices from YAHOO finance and
+        # insert them into the PRICES table of the database.
         def getPrices(stocks, list):
             prices = requestYahooPrices( convertToYahooFormat( list ) )
 
@@ -200,6 +226,8 @@ class Pleco:
                 self.db.setPrice( list[i], date, prices[i] )
                 print "%s = $%.2f" % (list[i], float(prices[i]) / 1000)
 
+        # Given a stock symbol which may be in google finance format, we
+        # convert them to yahoo format (eg, ending in .to)
         def convertToYahooFormat( list ):
             # convert from google to yahoo format.
             ret = []
@@ -210,6 +238,9 @@ class Pleco:
 
             return ret
 
+        # Given a list of stock symbols, we request the current prices from
+        # Yahoo and return them as a list. The prices are returned in the same
+        # order as the requested symbols so you can match them up.
         def requestYahooPrices(symbols):
             # form HTTP request
             url = "http://finance.yahoo.com/d/quotes.csv?s=%s&f=l1&e=.csv" % \
@@ -244,10 +275,14 @@ class Pleco:
             getPrices( stocks, array )
             array = []
 
+    # Scrape the financial information from the quarterly reports of all
+    # companies and store in the database.
     def scrapeFinancials( self ):
         for company in self.db.getCompanies():
             self.scrapeFinancialsForSymbol( company[0] )
 
+    # Scrape the financial information from the quarterly reports of a single
+    # company and store in the database.
     def scrapeFinancialsForSymbol( self, symbol ):
         date = int(time.time())
 
