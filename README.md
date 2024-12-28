@@ -1,26 +1,51 @@
-### Stock Scraper for Canadian Financial Data
-Scrapes several online sources to get:
+### TSX Company Directory
 
-1. A list of symbols and company names on the Toronto Stock Exchange
-2. The industries of the companies
-3. Current prices of the stocks
-4. Quarterly and annual EPS and revenue for the past year.
+A tool that scrapes the Toronto Stock Exchange (TSX) to create a directory of:
 
-The information is then stored in an SQLite database.
+1. Company ticker symbols
+2. Company names
+3. Industry classifications
 
-Usage:
-Scrape the company data
-<code>
-    ./pleco.py --all
-</code>
+Note: This tool only lists companies. ETFs (Exchange Traded Funds) are not included in the directory.
 
-Output a table of the most growing companys:
-<code>
-    ./pleco.py --process
-</code>
+The information is stored in an SQLite database and can be dumped to JSON with the --dump option.
 
-This table is calculated by running a specific screen, defined in the filt()
-function. It excludes all oil and mineral companies and looks for companies
-that have been growing revenue and EPS consistently for a number of years, and
-also have a low P/E ratio. Please note that companies in this list may not be
-particularly good investments.
+### Installation
+
+1. Clone this repository
+2. Install Python dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Usage
+
+Scrape company data:
+
+```bash
+./pleco.py --all
+```
+
+Output JSON list of all companies:
+
+```bash
+./pleco.py --dump
+```
+
+Example output:
+
+```json
+[
+  {
+    "symbol": "TSE:AW",
+    "name": "A & W Food Services of Canada Inc.",
+    "industry": "N/A"
+  },
+  {
+    "symbol": "TSE:AAB",
+    "name": "Aberdeen International Inc.",
+    "industry": "Finance"
+  }
+]
+```

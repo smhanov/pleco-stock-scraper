@@ -1,12 +1,13 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 import os
 import sys
 import re
-from BeautifulSoup import BeautifulSoup
 import sqlite3
-import urllib
+from bs4 import BeautifulSoup
+import urllib.request
 import hashlib
 import time
+import json
 
 # This program will first download a list of stocks from the TSX. Then, for
 # each stock, it grabs company information, including company name and
@@ -115,16 +116,15 @@ class PageCache:
 
     def get( self, url, fname = None ):
         if fname == None:
-            fname = hashlib.sha1(url).hexdigest()
+            fname = hashlib.sha1(url.encode('utf-8')).hexdigest()
         fname = os.path.join( CACHE_FOLDER, fname )
 
         if os.path.exists( fname ):
             return open( fname, "rt" ).read()
         else:
-            print "Retrieve %s" % url
-            f = urllib.urlopen(url)
-
-            content = f.read()
+            print("Retrieve %s" % url)
+            f = urllib.request.urlopen(url)
+            content = f.read().decode('utf-8')
             f.close()
 
             f = open( fname, "w" );
@@ -148,18 +148,20 @@ class Pleco:
         symbol = symbol.upper()
         if symbol.startswith("TSE:"):
             symbol = symbol[4:]
+        symbol = symbol.replace(".", "-")
 
         # lookup file, otherwise retrieve the url
-        url = "http://www.theglobeandmail.com/globe-investor/markets/stocks/summary/?q=%s-T" % symbol
+        url = f"https://www.theglobeandmail.com/investing/markets/stocks/{symbol}-T/profile/"
         page = self.webCache.get( url )
-        item = BeautifulSoup(page,
-                convertEntities=BeautifulSoup.HTML_ENTITIES).find( 'li', {"class":"industry last"})
+        
+        soup = BeautifulSoup(page, 'html.parser')
+        industry_element = soup.find('barchart-field', {"name": "industryGroup"})
 
-        if item == None:
-            print "Warning: Cannot find industry in %s" % url
-            return None
+        if industry_element is None:
+            print(f"Warning: Cannot find industry in {url}")
+            return "N/A"
 
-        return item.string
+        return industry_element.get('value')
 
     # This function will, given a stock symbol, scrape the company name from
     # Google Finance. It returns it as a string.
@@ -170,8 +172,7 @@ class Pleco:
         expr = re.compile(r"""Financial Statements for (.*?) - Google Finance""")
         m = expr.search(page)
         if m:
-            return BeautifulSoup(m.group(1),
-                    convertEntities=BeautifulSoup.HTML_ENTITIES).contents[0].string
+            return BeautifulSoup(m.group(1), 'html.parser').contents[0].string
         else:
             return None
 
@@ -179,37 +180,29 @@ class Pleco:
     # scraped from the TSX web page.
     def scrapeCompanies( self ):
         letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        PageExpr = re.compile("""Page \d+ of (\d+)""")
-        SymExpr = re.compile("""symbol=([^"&]+)""")
         found = {}
 
-        def process(page):
-            m = SymExpr.findall( page )
-            for a in m:
-                symbol = "TSE:" + str(a)
-                if symbol in found: continue
-                found[symbol] = 1
-                name = self.scrapeCompanyNameForSymbol( symbol )
-                industry = self.scrapeIndustryForSymbol( symbol )
-                if name == None or industry == None: continue
-                print "Found %s (%s) - %s" % (name, symbol, industry)
-                self.db.addCompany( symbol, name, industry )
-
         for s in letters:
-            url = "http://www.tmx.com/HttpController?GetPage=ListedCompaniesViewPage&SearchCriteria=Name&SearchKeyword=%s&SearchType=StartWith&Page=%d&SearchIsMarket=Yes&Market=T&Language=en" % (s, 1)
-            page = self.webCache.get( url )
-            m = PageExpr.search( page )
-            if m:
-                numPages = int(m.group(1))
-            else:
-                numPages = 1
-
-            process(page)
-
-            for p in range( 1, numPages ):
-                url = "http://www.tmx.com/HttpController?GetPage=ListedCompaniesViewPage&SearchCriteria=Name&SearchKeyword=%s&SearchType=StartWith&Page=%d&SearchIsMarket=Yes&Market=T&Language=en" % (s, p)
-                page = self.webCache.get( url )
-                process(page)
+            url = f"https://www.tsx.com/json/company-directory/search/tsx/{s}"
+            page = self.webCache.get(url)
+            
+            try:
+                data = json.loads(page)
+                for company in data.get('results', []):
+                    symbol = "TSE:" + company['symbol']
+                    if symbol in found: 
+                        continue
+                        
+                    found[symbol] = 1
+                    name = company['name']
+                    industry = self.scrapeIndustryForSymbol(symbol)
+                    
+                    if name and industry:
+                        print(f"Found {name} ({symbol}) - {industry}")
+                        self.db.addCompany(symbol, name, industry)
+                        
+            except json.JSONDecodeError as e:
+                print(f"Error parsing JSON for letter {s}: {e}", file=sys.stderr)
 
     # Assume the database already has the companies table filled in. This
     # function will get the current price of every company that we know about
@@ -224,7 +217,7 @@ class Pleco:
 
             for i in range(len(prices)):
                 self.db.setPrice( list[i], date, prices[i] )
-                print "%s = $%.2f" % (list[i], float(prices[i]) / 1000)
+                print("%s = $%.2f" % (list[i], float(prices[i]) / 1000))
 
         # Given a stock symbol which may be in google finance format, we
         # convert them to yahoo format (eg, ending in .to)
@@ -317,7 +310,7 @@ class Pleco:
 
         def extractDates( lines ):
             values = []
-            expr = re.compile(r"""(\d\d\d\d-\d\d-\d\d)""")
+            expr = re.compile(r"""(\d{4}-\d{2}-\d{2})""")
             for line in lines:
                 m = expr.search(line)
                 if m:
@@ -341,12 +334,12 @@ class Pleco:
                         break
             return lines
 
-        print "Scraping financials for %s" % symbol
+        print("Scraping financials for %s" % symbol)
 
         # retrieve the web page
         url = "http://www.google.com/finance?q=%s&fstype=ii" % symbol
         page = self.webCache.get( url )
-        soup = BeautifulSoup(page)
+        soup = BeautifulSoup(page, 'html.parser')
         page = page.split('\n')
         quarterlyPage = soup.find( "div", { "id" : "incinterimdiv" } )
         annualPage = soup.find( "div", { "id" : "incannualdiv" } )
@@ -356,17 +349,17 @@ class Pleco:
 
         # Look for "In Millions of". If not there, error!
         if not checkPresence( page, "In Millions of" ):
-            print >>sys.stderr, "While processing %s could not find 'In Millions of' at %s" % (symbol, url)
+            print("While processing %s could not find 'In Millions of' at %s" % (symbol, url), file=sys.stderr)
             return False
 
         # Set multiplier to 1000000
         multiplier = 1000000
 
         # build array of all lines like "3 months Ending"
-        quarterlyDates = extractDates(findLinesLike( qstr, """\d+ (months|weeks) ending""" ))
+        quarterlyDates = extractDates(findLinesLike( qstr, r"""\d+ (months|weeks) ending""" ))
 
         # Build array of all lines like "12 months Ending"
-        annualDates = extractDates(findLinesLike( astr, """\d+ (months|weeks) ending""" ))
+        annualDates = extractDates(findLinesLike( astr, r"""\d+ (months|weeks) ending""" ))
 
         # Look for td containing "Total Revenue"
         # Extract all td elements in siblings that contain only a number
@@ -458,7 +451,7 @@ class Pleco:
     def addExtraInfo( self ):
         for company in self.db.getCompanies():
             symbol = company[0]
-            print "Processing %s...    \r" % symbol,
+            print("Processing %s...    \r" % symbol, end='')
             sys.stdout.flush()
             self.addProjected(symbol, "EPS")
             self.addProjected(symbol, "Revenue")
@@ -468,7 +461,17 @@ class Pleco:
             self.addYearsOfGrowth( symbol, "Revenue" )
             self.addPE( symbol )
 
-        print
+        print()
+
+    def dump(self):
+        companies = []
+        for company in self.db.getCompanies():
+            companies.append({
+                "symbol": company[0],
+                "name": company[1],
+                "industry": company[2]
+            })
+        print(json.dumps(companies, indent=2))
 
     def process(self):
         stocks = {}
@@ -512,16 +515,15 @@ class Pleco:
             and stock["industry"].find("Forestry") == -1 
 
     def printTable(self, stocks):
-        print "symbol, AverageRevenueGrowth, YearsOfRevenueGrowth, AverageEPSGrowth, YearsOfEPSGrowth, PE, Company"
+        print("symbol, AverageRevenueGrowth, YearsOfRevenueGrowth, AverageEPSGrowth, YearsOfEPSGrowth, PE, Company")
         for stock in stocks:
-            print stock["symbol"].ljust(13),
-            print str(stock["AverageRevenueGrowth"]).ljust(5),
-            print str(stock["YearsOfRevenueGrowth"]).ljust(3),
-            print str(stock["AverageEPSGrowth"]).ljust(5),
-            print str(stock["YearsOfEPSGrowth"]).ljust(3),
-            print str(stock["PE"]).ljust(5),
-            print stock["company"],
-            print
+            print(stock["symbol"].ljust(13), end=' ')
+            print(str(stock["AverageRevenueGrowth"]).ljust(5), end=' ')
+            print(str(stock["YearsOfRevenueGrowth"]).ljust(3), end=' ')
+            print(str(stock["AverageEPSGrowth"]).ljust(5), end=' ')
+            print(str(stock["YearsOfEPSGrowth"]).ljust(3), end=' ')
+            print(str(stock["PE"]).ljust(5), end=' ')
+            print(stock["company"])
 
     def run(self):
         for i in range(1, len(sys.argv)):
@@ -542,6 +544,8 @@ class Pleco:
                 self.addPE("tse:g")
             elif sys.argv[i] == "--process":
                 self.process()
+            elif sys.argv[i] == "--dump":
+                self.dump()
 
 
 Pleco().run()
